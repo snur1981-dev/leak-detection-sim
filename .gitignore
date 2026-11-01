@@ -1,0 +1,6 @@
+data/
+__pycache__/
+*.pyc
+learn/warmup.csv
+learn/warmup_fig.png
+.venv/
