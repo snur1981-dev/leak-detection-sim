@@ -9,13 +9,19 @@ Build order:
   Oct 29+ faults: comms dropout, frozen value, slow drift, clock skew / deadband
 """
 import math
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+DATA_DIR = Path(__file__).parent / "data"
 
 # --- Test pipeline (see README table) ---
 PIPE = {
     "length_m": 100_000.0,
     "od_m": 0.4064,          # NPS 16
     "wall_m": 0.0079,
-        "roughness_m": 0.045e-3,  # 0.045 mm commercial steel, written in metres
+    "roughness_m": 0.045e-3,  # 0.045 mm commercial steel, written in metres
     "steel_E_pa": 200e9,
 }
 FLUID = {
@@ -90,6 +96,63 @@ def check_hand_calcs():
     close(wave_speed(), 1106, 0.01)
     print("All hand-check asserts passed.")
 
+def make_case(duration_h=24, q_m3s=OPERATION["flow_m3s"], leak_pct=0.0, leak_start_min=None,
+              noise_m3s=0.0002, bias_pct=(0.0, 0.0), p_noise_mpa=0.005, t_noise_c=0.02,
+              t_c=15.0, seed=0, start="2026-10-01 00:00"):
+    """Synthetic 1-minute SCADA data for one test case (steady flow, optional leak).
+
+    leak_pct: leak size as % of flow (1.0 means 1%). leak_start_min: minute the leak starts.
+    bias_pct: (inlet, outlet) meter bias in % of reading. noise_m3s: std dev of each meter's noise.
+    Returns a DataFrame: one column per SCADA tag, plus true_* columns that cpm.py must never read.
+    """
+    rng = np.random.default_rng(seed)
+    n = int(duration_h * 60)
+    minute = np.arange(n)
+    index = pd.date_range(start, periods=n, freq="1min", name="timestamp")
+
+    # --- Truth: what really happens in the pipe ---
+    q_in = np.full(n, q_m3s)
+    leak = np.zeros(n)
+    if leak_start_min is not None:
+        leak = np.where(minute >= leak_start_min, q_m3s * leak_pct / 100, 0.0)
+    q_out = q_in - leak
+
+    # --- Measurements: truth x (1 + bias) + noise, an independent noise stream per meter ---
+    bias_in, bias_out = bias_pct
+    meas_in = q_in * (1 + bias_in / 100) + rng.normal(0, noise_m3s, n)
+    meas_out = q_out * (1 + bias_out / 100) + rng.normal(0, noise_m3s, n)
+
+    # --- Pressures and temperatures: steady values plus transmitter noise ---
+    ss = steady_state(q_m3s)
+
+    def noisy(value, sd):
+        return value + rng.normal(0, sd, n)
+
+    df = pd.DataFrame({
+        TAGS["q_in"]: meas_in,
+        TAGS["q_out"]: meas_out,
+        TAGS["p_in"]: noisy(ss["p_in_mpa"], p_noise_mpa),
+        TAGS["p_mid"]: noisy(ss["p_mid_mpa"], p_noise_mpa),
+        TAGS["p_out"]: noisy(ss["p_out_mpa"], p_noise_mpa),
+        TAGS["t_in"]: noisy(t_c, t_noise_c),
+        TAGS["t_out"]: noisy(t_c, t_noise_c),
+        "true_q_in": q_in,
+        "true_q_out": q_out,
+        "true_leak": leak,
+    }, index=index)
+    return df
+
+
+def check_case_leak1(df):
+    """Part 2 checkpoint for a 1% leak at minute 600 with zero meter bias."""
+    assert len(df) == 1440 and df.shape[1] == 10 and not df.isna().any().any()
+    after = df.iloc[600:]
+    diff = (after[TAGS["q_in"]] - after[TAGS["q_out"]]).mean()
+    assert abs(diff - 0.0020) <= 0.0001, f"mean imbalance after leak {diff:.5f}"
+    sd = df[TAGS["q_in"]].std()
+    assert abs(sd - 0.0002) <= 0.1 * 0.0002, f"inlet noise std {sd:.6f}"
+    print(f"Part 2 checks passed: mean in-out after leak {diff:.5f} m3/s, inlet std {sd:.6f} m3/s")
+
 if __name__ == "__main__":
     for k, v in derived().items():
         print(f"{k:22s} {v:,.4f}")
@@ -102,3 +165,12 @@ if __name__ == "__main__":
     print(f"\nWave speed {a:,.0f} m/s; crosses 100 km in {PIPE['length_m'] / a:.0f} s")
     print()
     check_hand_calcs()
+
+    # Part 2: one leak case, saved for cpm.py
+    DATA_DIR.mkdir(exist_ok=True)
+    case = make_case(leak_pct=1.0, leak_start_min=600, seed=1)
+    case.to_csv(DATA_DIR / "case_leak1.csv")
+    check_case_leak1(case)
+    same = make_case(leak_pct=1.0, leak_start_min=600, seed=1)
+    assert case.equals(same), "same seed must give identical data"
+    print(f"Saved {DATA_DIR / 'case_leak1.csv'} ({len(case)} rows)")
