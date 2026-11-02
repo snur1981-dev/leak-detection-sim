@@ -96,12 +96,26 @@ def check_hand_calcs():
     close(wave_speed(), 1106, 0.01)
     print("All hand-check asserts passed.")
 
+def flow_profile(n, q_start, events):
+    """True inlet flow each minute: q_start, then straight-line ramps from the event list.
+
+    events: list of (kind, start_min, duration_min, q_from, q_to), in time order.
+    """
+    t_pts, q_pts = [0], [q_start]
+    for _kind, start_min, dur_min, q_from, q_to in events:
+        t_pts += [start_min, start_min + dur_min]
+        q_pts += [q_from, q_to]
+    t_pts.append(n - 1)
+    q_pts.append(q_pts[-1])
+    return np.interp(np.arange(n), t_pts, q_pts)
+
 def make_case(duration_h=24, q_m3s=OPERATION["flow_m3s"], leak_pct=0.0, leak_start_min=None,
               noise_m3s=0.0002, bias_pct=(0.0, 0.0), p_noise_mpa=0.005, t_noise_c=0.02,
-              t_c=15.0, seed=0, start="2026-10-01 00:00"):
-    """Synthetic 1-minute SCADA data for one test case (steady flow, optional leak).
+              t_c=15.0, events=None, seed=0, start="2026-10-01 00:00"):
+    """Synthetic 1-minute SCADA data for one test case.
 
-    leak_pct: leak size as % of flow (1.0 means 1%). leak_start_min: minute the leak starts.
+    q_m3s: starting flow. events: optional ramps, e.g. [("pump_start", 360, 10, 0.10, 0.20)].
+    leak_pct: leak size as % of normal flow, 0.20 m3/s (1.0 means 1%). leak_start_min: when it starts.
     bias_pct: (inlet, outlet) meter bias in % of reading. noise_m3s: std dev of each meter's noise.
     Returns a DataFrame: one column per SCADA tag, plus true_* columns that cpm.py must never read.
     """
@@ -109,21 +123,39 @@ def make_case(duration_h=24, q_m3s=OPERATION["flow_m3s"], leak_pct=0.0, leak_sta
     n = int(duration_h * 60)
     minute = np.arange(n)
     index = pd.date_range(start, periods=n, freq="1min", name="timestamp")
+    events = events or []
+    g = derived()
 
-    # --- Truth: what really happens in the pipe ---
-    q_in = np.full(n, q_m3s)
+    # --- Truth: inlet flow, pressures and line pack, minute by minute (quasi-steady) ---
+    q_in = flow_profile(n, q_m3s, events)
+    states = [steady_state(q) for q in q_in]
+    p_in = np.array([s["p_in_mpa"] for s in states])
+    p_mid = np.array([s["p_mid_mpa"] for s in states])
+    p_out = np.array([s["p_out_mpa"] for s in states])
+    p_avg = np.array([s["p_avg_mpa"] for s in states])
+    t_avg = np.full(n, t_c)
+    lp = g["linepack_m3_per_mpa"] * p_avg - g["linepack_m3_per_c"] * t_avg  # m3 (only changes matter)
+
     leak = np.zeros(n)
     if leak_start_min is not None:
-        leak = np.where(minute >= leak_start_min, q_m3s * leak_pct / 100, 0.0)
-    q_out = q_in - leak
+        leak = np.where(minute >= leak_start_min, OPERATION["flow_m3s"] * leak_pct / 100, 0.0)
+
+    # Mass balance: what comes out = what went in - what leaked - what was stored as line pack
+    dlp_dt = np.diff(lp, prepend=lp[0]) / 60  # m3 per minute -> m3/s
+    q_out = q_in - leak - dlp_dt
+
+    # Pump status tag, the way SCADA would show it (1 = second pump running)
+    pump_st = np.zeros(n)
+    for kind, start_min, *_ in events:
+        if kind == "pump_start":
+            pump_st[start_min:] = 1
+        elif kind == "pump_stop":
+            pump_st[start_min:] = 0
 
     # --- Measurements: truth x (1 + bias) + noise, an independent noise stream per meter ---
     bias_in, bias_out = bias_pct
     meas_in = q_in * (1 + bias_in / 100) + rng.normal(0, noise_m3s, n)
     meas_out = q_out * (1 + bias_out / 100) + rng.normal(0, noise_m3s, n)
-
-    # --- Pressures and temperatures: steady values plus transmitter noise ---
-    ss = steady_state(q_m3s)
 
     def noisy(value, sd):
         return value + rng.normal(0, sd, n)
@@ -131,27 +163,41 @@ def make_case(duration_h=24, q_m3s=OPERATION["flow_m3s"], leak_pct=0.0, leak_sta
     df = pd.DataFrame({
         TAGS["q_in"]: meas_in,
         TAGS["q_out"]: meas_out,
-        TAGS["p_in"]: noisy(ss["p_in_mpa"], p_noise_mpa),
-        TAGS["p_mid"]: noisy(ss["p_mid_mpa"], p_noise_mpa),
-        TAGS["p_out"]: noisy(ss["p_out_mpa"], p_noise_mpa),
+        TAGS["p_in"]: noisy(p_in, p_noise_mpa),
+        TAGS["p_mid"]: noisy(p_mid, p_noise_mpa),
+        TAGS["p_out"]: noisy(p_out, p_noise_mpa),
         TAGS["t_in"]: noisy(t_c, t_noise_c),
         TAGS["t_out"]: noisy(t_c, t_noise_c),
+        "PS1_PUMP_ST": pump_st,
         "true_q_in": q_in,
         "true_q_out": q_out,
         "true_leak": leak,
+        "true_lp": lp,
     }, index=index)
     return df
 
 
 def check_case_leak1(df):
     """Part 2 checkpoint for a 1% leak at minute 600 with zero meter bias."""
-    assert len(df) == 1440 and df.shape[1] == 10 and not df.isna().any().any()
+    assert len(df) == 1440 and df.shape[1] == 12 and not df.isna().any().any()
     after = df.iloc[600:]
     diff = (after[TAGS["q_in"]] - after[TAGS["q_out"]]).mean()
     assert abs(diff - 0.0020) <= 0.0001, f"mean imbalance after leak {diff:.5f}"
     sd = df[TAGS["q_in"]].std()
     assert abs(sd - 0.0002) <= 0.1 * 0.0002, f"inlet noise std {sd:.6f}"
     print(f"Part 2 checks passed: mean in-out after leak {diff:.5f} m3/s, inlet std {sd:.6f} m3/s")
+
+def check_case_pumpstart(df):
+    """Part 3 checkpoint: pump start 0.10 -> 0.20 m3/s, no leak."""
+    p_avg = (df["true_lp"] + derived()["linepack_m3_per_c"] * 15.0) / derived()["linepack_m3_per_mpa"]
+    dp_avg = p_avg.iloc[-1] - p_avg.iloc[0]
+    dlp = df["true_lp"].iloc[-1] - df["true_lp"].iloc[0]
+    stored = ((df["true_q_in"] - df["true_q_out"]) * 60).sum()
+    assert abs(dp_avg - 2.17) <= 0.02 * 2.17, f"avg pressure rise {dp_avg:.3f} MPa"
+    assert abs(dlp - 25.0) <= 0.02 * 25.0, f"line pack rise {dlp:.2f} m3"
+    assert abs(stored - dlp) <= 0.01, f"in-out {stored:.3f} vs line pack {dlp:.3f}"
+    print(f"Part 3 checks passed: avg pressure +{dp_avg:.2f} MPa, line pack +{dlp:.1f} m3, "
+          f"in minus out over the day {stored:.2f} m3")
 
 if __name__ == "__main__":
     for k, v in derived().items():
@@ -174,3 +220,9 @@ if __name__ == "__main__":
     same = make_case(leak_pct=1.0, leak_start_min=600, seed=1)
     assert case.equals(same), "same seed must give identical data"
     print(f"Saved {DATA_DIR / 'case_leak1.csv'} ({len(case)} rows)")
+    
+    # Part 3: pump start at 06:00, no leak
+    pump = make_case(q_m3s=0.10, events=[("pump_start", 360, 10, 0.10, 0.20)], seed=2)
+    pump.to_csv(DATA_DIR / "case_pumpstart.csv")
+    check_case_pumpstart(pump)
+    print(f"Saved {DATA_DIR / 'case_pumpstart.csv'} ({len(pump)} rows)")
