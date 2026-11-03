@@ -1,12 +1,6 @@
 """Test pipeline parameters and the synthetic SCADA data generator.
 
 Synthetic data only: a simplified hydraulic model, not a real pipeline or SCADA system.
-
-Build order:
-  Oct 22  steady-state hydraulics (Darcy-Weisbach + Swamee-Jain), pressure profile
-  Oct 23  1-minute time series, meter noise and bias, historian-style CSV, one leak
-  Oct 24  pump start/stop ramps with line pack built in
-  Oct 29+ faults: comms dropout, frozen value, slow drift, clock skew / deadband
 """
 import math
 from pathlib import Path
@@ -16,7 +10,7 @@ import pandas as pd
 
 DATA_DIR = Path(__file__).parent / "data"
 
-# --- Test pipeline (see README table) ---
+# --- Test pipeline (see README table). All SI units: m, Pa, kg, s. ---
 PIPE = {
     "length_m": 100_000.0,
     "od_m": 0.4064,          # NPS 16
@@ -38,6 +32,8 @@ TAGS = {
     "p_in": "PS1_PT101", "p_mid": "MID_PT201", "p_out": "TRM_PT301",
     "t_in": "PS1_TT101", "t_out": "TRM_TT201",
 }
+STATUS_TAGS = ["PS1_PUMP_ST", "TRM_XV201"]
+OUTLET_TAGS = [TAGS["q_out"], TAGS["p_out"], TAGS["t_out"]]  # all read through the terminal RTU
 
 
 def derived(pipe=PIPE, fluid=FLUID):
@@ -54,12 +50,16 @@ def derived(pipe=PIPE, fluid=FLUID):
         "linepack_m3_per_mpa": vol * (fluid_term + pipe_term) * 1e6,
         "linepack_m3_per_c": vol * fluid["beta_per_c"],
     }
+
+
 def friction_factor(re, rel_rough):
     """Darcy friction factor by Swamee-Jain (turbulent flow).
 
     re: Reynolds number (dimensionless). rel_rough: roughness / diameter (dimensionless).
     """
     return 0.25 / math.log10(rel_rough / 3.7 + 5.74 / re ** 0.9) ** 2
+
+
 def steady_state(q_m3s, p_out_mpa=OPERATION["p_out_mpa"], pipe=PIPE, fluid=FLUID):
     """Steady flow on a flat line: velocity, Re, f, friction loss and pressures (MPa)."""
     g = derived(pipe, fluid)
@@ -78,11 +78,15 @@ def steady_state(q_m3s, p_out_mpa=OPERATION["p_out_mpa"], pipe=PIPE, fluid=FLUID
         "p_out_mpa": p_out_mpa,
         "p_avg_mpa": p_out_mpa + dp_mpa / 2,   # average of a straight line = midpoint
     }
+
+
 def wave_speed(pipe=PIPE, fluid=FLUID):
     """Pressure wave speed in m/s, slowed by pipe elasticity."""
     d = derived(pipe, fluid)["id_m"]
     k = fluid["bulk_modulus_pa"]
     return math.sqrt((k / fluid["density_kgm3"]) / (1 + k * d / (pipe["steel_E_pa"] * pipe["wall_m"])))
+
+
 def check_hand_calcs():
     """Fail loudly if the code drifts from the hand calculations (Lesson 1)."""
     def close(got, want, tol_frac):
@@ -96,6 +100,7 @@ def check_hand_calcs():
     close(wave_speed(), 1106, 0.01)
     print("All hand-check asserts passed.")
 
+
 def flow_profile(n, q_start, events):
     """True inlet flow each minute: q_start, then straight-line ramps from the event list.
 
@@ -108,6 +113,7 @@ def flow_profile(n, q_start, events):
     t_pts.append(n - 1)
     q_pts.append(q_pts[-1])
     return np.interp(np.arange(n), t_pts, q_pts)
+
 
 def make_case(duration_h=24, q_m3s=OPERATION["flow_m3s"], leak_pct=0.0, leak_start_min=None,
               noise_m3s=0.0002, bias_pct=(0.0, 0.0), p_noise_mpa=0.005, t_noise_c=0.02,
@@ -144,13 +150,19 @@ def make_case(duration_h=24, q_m3s=OPERATION["flow_m3s"], leak_pct=0.0, leak_sta
     dlp_dt = np.diff(lp, prepend=lp[0]) / 60  # m3 per minute -> m3/s
     q_out = q_in - leak - dlp_dt
 
-    # Pump status tag, the way SCADA would show it (1 = second pump running)
-    pump_st = np.zeros(n)
+    # Status tags, the way SCADA would show them.
+    # PS1_PUMP_ST: 1 = second pump running. TRM_XV201: outlet control valve, flips on each move.
+    # "setpoint" events change flow with no status change (so they never trigger the inhibit).
+    pump_kinds = [k for k, *_ in events if k in ("pump_start", "pump_stop")]
+    pump_st = np.full(n, 1.0 if pump_kinds[:1] == ["pump_stop"] else 0.0)
+    valve_st = np.ones(n)
     for kind, start_min, *_ in events:
         if kind == "pump_start":
             pump_st[start_min:] = 1
         elif kind == "pump_stop":
             pump_st[start_min:] = 0
+        elif kind == "valve":
+            valve_st[start_min:] = 1 - valve_st[start_min]
 
     # --- Measurements: truth x (1 + bias) + noise, an independent noise stream per meter ---
     bias_in, bias_out = bias_pct
@@ -169,6 +181,7 @@ def make_case(duration_h=24, q_m3s=OPERATION["flow_m3s"], leak_pct=0.0, leak_sta
         TAGS["t_in"]: noisy(t_c, t_noise_c),
         TAGS["t_out"]: noisy(t_c, t_noise_c),
         "PS1_PUMP_ST": pump_st,
+        "TRM_XV201": valve_st,
         "true_q_in": q_in,
         "true_q_out": q_out,
         "true_leak": leak,
@@ -179,13 +192,14 @@ def make_case(duration_h=24, q_m3s=OPERATION["flow_m3s"], leak_pct=0.0, leak_sta
 
 def check_case_leak1(df):
     """Part 2 checkpoint for a 1% leak at minute 600 with zero meter bias."""
-    assert len(df) == 1440 and df.shape[1] == 12 and not df.isna().any().any()
+    assert len(df) == 1440 and df.shape[1] == 13 and not df.isna().any().any()
     after = df.iloc[600:]
     diff = (after[TAGS["q_in"]] - after[TAGS["q_out"]]).mean()
     assert abs(diff - 0.0020) <= 0.0001, f"mean imbalance after leak {diff:.5f}"
     sd = df[TAGS["q_in"]].std()
     assert abs(sd - 0.0002) <= 0.1 * 0.0002, f"inlet noise std {sd:.6f}"
     print(f"Part 2 checks passed: mean in-out after leak {diff:.5f} m3/s, inlet std {sd:.6f} m3/s")
+
 
 def check_case_pumpstart(df):
     """Part 3 checkpoint: pump start 0.10 -> 0.20 m3/s, no leak."""
@@ -198,6 +212,58 @@ def check_case_pumpstart(df):
     assert abs(stored - dlp) <= 0.01, f"in-out {stored:.3f} vs line pack {dlp:.3f}"
     print(f"Part 3 checks passed: avg pressure +{dp_avg:.2f} MPa, line pack +{dlp:.1f} m3, "
           f"in minus out over the day {stored:.2f} m3")
+
+
+# --- Part 8 and 9: SCADA effects and instrument faults, applied to a finished case ---
+
+def apply_skew(df, seconds, tags=OUTLET_TAGS):
+    """Outlet clock runs `seconds` late: each outlet reading shows the value from s seconds earlier.
+
+    Linear interpolation between 1-minute readings: x(t - s) ~ x(t) - (s / 60) * (x(t) - x(t - 1 min)).
+    Valid for 0 <= s <= 60.
+    """
+    out = df.copy()
+    for tag in tags:
+        out[tag] = out[tag] - (seconds / 60) * out[tag].diff().fillna(0)
+    return out
+
+
+def apply_deadband(values, db):
+    """Report-by-exception: hold the last reported value until the reading moves more than db."""
+    x = np.asarray(values, dtype=float)
+    out = x.copy()
+    last = x[0]
+    for i in range(len(x)):
+        if abs(x[i] - last) > db:
+            last = x[i]
+        out[i] = last
+    return out
+
+
+def add_drift(df, tag, pct_per_day, start_min=0):
+    """Meter calibration drifts by pct_per_day (signed) from start_min onward."""
+    out = df.copy()
+    days = np.clip((np.arange(len(out)) - start_min) / 1440, 0, None)
+    out[tag] = out[tag] * (1 + pct_per_day / 100 * days)
+    return out
+
+
+def add_frozen(df, tag, start_min, minutes):
+    """The tag repeats the same value for `minutes` (stuck transmitter or stale SCADA value)."""
+    out = df.copy()
+    col = out.columns.get_loc(tag)
+    out.iloc[start_min:start_min + minutes, col] = out.iloc[start_min, col]
+    return out
+
+
+def add_dropout(df, tags, start_min, minutes):
+    """Comms outage: the tags are missing (NaN) for `minutes`."""
+    out = df.copy()
+    for tag in tags:
+        col = out.columns.get_loc(tag)
+        out.iloc[start_min:start_min + minutes, col] = np.nan
+    return out
+
 
 if __name__ == "__main__":
     for k, v in derived().items():
@@ -220,7 +286,7 @@ if __name__ == "__main__":
     same = make_case(leak_pct=1.0, leak_start_min=600, seed=1)
     assert case.equals(same), "same seed must give identical data"
     print(f"Saved {DATA_DIR / 'case_leak1.csv'} ({len(case)} rows)")
-    
+
     # Part 3: pump start at 06:00, no leak
     pump = make_case(q_m3s=0.10, events=[("pump_start", 360, 10, 0.10, 0.20)], seed=2)
     pump.to_csv(DATA_DIR / "case_pumpstart.csv")

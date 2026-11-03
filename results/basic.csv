@@ -1,6 +1,6 @@
 ,value
-line_balance_max_m3_before_leak,25.16
-compensated_max_m3_before_leak,0.68
+line_balance_max_m3_before_leak,25.160427107558224
+compensated_max_m3_before_leak,0.6848065086044743
 line_balance_first_alarm,2026-10-01 06:04:00
 line_balance_false_alarm_before_leak,True
 compensated_first_alarm,2026-10-01 10:28:00

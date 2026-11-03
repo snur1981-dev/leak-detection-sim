@@ -1,0 +1,7 @@
+fault,mode,flagged_min,5 min,1 h,24 h,5 min suppressed (min),1 h suppressed (min),24 h suppressed (min)
+Outlet meter drifts -0.02%/day,without quality.py,0,no alarms,"157 false alarms, first on day 4 at 17:11","82 false alarms, first on day 2 at 23:23",,,
+Outlet meter drifts -0.02%/day,with quality.py,0,no alarms,"157 false alarms, first on day 4 at 17:11","82 false alarms, first on day 2 at 23:23",,,
+Outlet flow frozen 60 min at a pump start,without quality.py,0,"1 false alarms, first on day 2 at 05:17","1 false alarms, first on day 2 at 05:17","3 false alarms, first on day 2 at 05:17",,,
+Outlet flow frozen 60 min at a pump start,with quality.py,51,no alarms,no alarms,no alarms,,,
+"Outlet RTU dropout 30 min, 2% leak starts 10 min in",without quality.py,0,leak alarm after 24 min,leak alarm after 25 min,leak alarm after 47 min,0.0,0.0,0.0
+"Outlet RTU dropout 30 min, 2% leak starts 10 min in",with quality.py,30,leak alarm after 27 min,leak alarm after 82 min,no alarm within 24 h,35.0,90.0,1470.0

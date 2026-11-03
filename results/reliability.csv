@@ -1,0 +1,46 @@
+config,seed,window,false_alarm_events,per_day
+Line balance,21,5 min,8,1.1428571428571428
+Line balance,21,1 h,8,1.1428571428571428
+Line balance,21,24 h,3,0.42857142857142855
+Compensated,21,5 min,0,0.0
+Compensated,21,1 h,0,0.0
+Compensated,21,24 h,0,0.0
+Compensated + inhibit,21,5 min,0,0.0
+Compensated + inhibit,21,1 h,0,0.0
+Compensated + inhibit,21,24 h,0,0.0
+Line balance,22,5 min,8,1.1428571428571428
+Line balance,22,1 h,8,1.1428571428571428
+Line balance,22,24 h,3,0.42857142857142855
+Compensated,22,5 min,0,0.0
+Compensated,22,1 h,0,0.0
+Compensated,22,24 h,0,0.0
+Compensated + inhibit,22,5 min,0,0.0
+Compensated + inhibit,22,1 h,0,0.0
+Compensated + inhibit,22,24 h,0,0.0
+Line balance,23,5 min,8,1.1428571428571428
+Line balance,23,1 h,8,1.1428571428571428
+Line balance,23,24 h,3,0.42857142857142855
+Compensated,23,5 min,0,0.0
+Compensated,23,1 h,0,0.0
+Compensated,23,24 h,0,0.0
+Compensated + inhibit,23,5 min,0,0.0
+Compensated + inhibit,23,1 h,0,0.0
+Compensated + inhibit,23,24 h,0,0.0
+Line balance,24,5 min,8,1.1428571428571428
+Line balance,24,1 h,8,1.1428571428571428
+Line balance,24,24 h,3,0.42857142857142855
+Compensated,24,5 min,0,0.0
+Compensated,24,1 h,0,0.0
+Compensated,24,24 h,0,0.0
+Compensated + inhibit,24,5 min,0,0.0
+Compensated + inhibit,24,1 h,0,0.0
+Compensated + inhibit,24,24 h,0,0.0
+Line balance,25,5 min,8,1.1428571428571428
+Line balance,25,1 h,8,1.1428571428571428
+Line balance,25,24 h,3,0.42857142857142855
+Compensated,25,5 min,0,0.0
+Compensated,25,1 h,0,0.0
+Compensated,25,24 h,0,0.0
+Compensated + inhibit,25,5 min,0,0.0
+Compensated + inhibit,25,1 h,0,0.0
+Compensated + inhibit,25,24 h,0,0.0
