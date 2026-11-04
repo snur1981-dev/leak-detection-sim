@@ -21,7 +21,7 @@ SETTINGS = {
 }
 
 
-# --- Part 4: the balance ---
+# Part 4: the balance
 
 def line_pack(df):
     """Line pack in m3 from the pressure and temperature tags (only changes matter).
@@ -61,7 +61,7 @@ def first_alarm(alarm):
     return alarm.idxmax() if alarm.any() else None
 
 
-# --- Part 6: thresholds from a no-leak tuning run, three windows, persistence, inhibit ---
+# Part 6: thresholds from a no-leak tuning run, three windows, persistence, inhibit
 
 def tune(df_noleak, settings=SETTINGS):
     """Thresholds per window: bias allowance + k x (std dev of the compensated imbalance).

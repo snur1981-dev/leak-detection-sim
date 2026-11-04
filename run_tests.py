@@ -1,7 +1,6 @@
-"""Test matrix: runs every case, writes results/*.csv, report/figures/*.png and results/summary.md.
+"""Runs every test case and writes results/*.csv, results/summary.md and report/figures/*.png.
 
-Synthetic data only. Every number in the report must come from a file this script writes.
-Run:  python run_tests.py
+Synthetic data only. Run: python run_tests.py
 """
 from pathlib import Path
 
@@ -9,7 +8,7 @@ import matplotlib
 import matplotlib.dates
 import matplotlib.ticker
 
-matplotlib.use("Agg")  # write files without needing a screen
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -25,7 +24,7 @@ DEFAULT_BIAS = (0.05, -0.03)  # inlet reads 0.05% high, outlet 0.03% low: meters
 WINDOWS = cpm.SETTINGS["windows_min"]
 WIN_NAME = {5: "5 min", 60: "1 h", 1440: "24 h"}
 
-# Colours: categorical slots 1-3 of the reference palette; recessive greys for grid and text
+# Plot style
 C1, C2, C3 = "#2a78d6", "#eb6834", "#1baf7a"
 INK, INK2, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 plt.rcParams.update({
@@ -36,7 +35,7 @@ plt.rcParams.update({
 })
 
 
-# --- Event schedules ---
+# Event schedules
 
 def reliability_events(days=7):
     """Each of the first 6 days: pump stop 02:00, pump start 05:00. Days 3 and 5: valve cut 14:00-16:00."""
@@ -83,7 +82,7 @@ def md_table(df):
     return "\n".join(lines)
 
 
-# --- Part 5: the basic version (one leak, one window, line pack on and off) ---
+# Part 5: the basic version (one leak, one window, line pack on and off)
 
 def part5_basic():
     df = make_case(q_m3s=0.10, events=[("pump_start", 360, 10, 0.10, 0.20)],
@@ -134,10 +133,10 @@ def part5_basic():
     return res
 
 
-# --- Part 6: thresholds from a no-leak tuning run ---
+# Part 6: thresholds from a no-leak tuning run
 
 def part6_tune():
-    # 7 days: a 24 h window needs several days of data for its sigma to mean anything
+    # 7 days, so the 24 h window has several days of data
     df = make_case(duration_h=24 * 7, bias_pct=DEFAULT_BIAS, seed=100)
     thresholds, sigmas = cpm.tune(df)
     tab = pd.DataFrame({"window": [WIN_NAME[w] for w in WINDOWS],
@@ -148,7 +147,7 @@ def part6_tune():
     return thresholds, tab
 
 
-# --- Part 7: sensitivity (and accuracy of the leak rate estimate) ---
+# Part 7: sensitivity (and accuracy of the leak rate estimate)
 
 def part7_sensitivity(settings):
     rows = []
@@ -177,7 +176,7 @@ def part7_sensitivity(settings):
 
     fig, ax = plt.subplots(figsize=(7, 4))
     for w, col in zip(WINDOWS, (C1, C2, C3)):
-        s = summ[(summ.window == WIN_NAME[w]) & (summ.detected == "5/5")]  # plot only reliable detection
+        s = summ[(summ.window == WIN_NAME[w]) & (summ.detected == "5/5")]  # only cases all 5 seeds caught
         if s.empty:
             continue
         ax.errorbar(s.leak_pct, s["median"], yerr=[s["median"] - s.low, s.high - s["median"]],
@@ -198,7 +197,7 @@ def part7_sensitivity(settings):
     return summ, acc
 
 
-# --- Part 8: reliability (false alarms with no leak, normal operations) ---
+# Part 8: reliability (false alarms with no leak, normal operations)
 
 CONFIGS = {"Line balance": dict(compensate=False, use_inhibit=False),
            "Compensated": dict(compensate=True, use_inhibit=False),
@@ -237,10 +236,10 @@ def part8_reliability(settings):
     return summ
 
 
-# --- Part 9: robustness (clock skew, deadband, drift, frozen value, dropout) ---
+# Part 9: robustness (clock skew, deadband, drift, frozen value, dropout)
 
 def part9_robustness(settings):
-    # 9a. Clock skew on the outlet RTU, setpoint changes that do NOT trigger the inhibit
+    # 9a. Clock skew on the outlet RTU, setpoint changes that don't trigger the inhibit
     skew_rows = []
     for seed in (31, 32, 33):
         base = make_case(duration_h=48, events=setpoint_events(), bias_pct=DEFAULT_BIAS, seed=seed)
@@ -286,17 +285,17 @@ def part9_robustness(settings):
     f_rows = []
     for name, raw in faults.items():
         flags = quality.check(raw)
-        filled = raw.ffill()  # the historian holds the last value through a gap
+        filled = raw.ffill()  # historian holds the last value
         for mode, bad in (("without quality.py", None), ("with quality.py", flags["bad"])):
             out = cpm.run_cpm(filled, settings, bad=bad)
             row = {"fault": name, "mode": mode, "flagged_min": quality.summary(flags)["bad"] if bad is not None else 0}
             for w in WINDOWS:
                 a = out[f"alarm_{w}"]
-                if "leak" in name:  # a real leak: what matters is how long until the alarm
+                if "leak" in name:  # real leak: time to alarm
                     d = detection(out, w, leak_start)
                     row[f"{WIN_NAME[w]}"] = f"leak alarm after {d} min" if d is not None else "no alarm within 24 h"
                     row[f"{WIN_NAME[w]} suppressed (min)"] = int(out[f"degraded_{w}"].sum())
-                else:  # no leak: every alarm is a false alarm
+                else:  # no leak: any alarm is false
                     first = cpm.first_alarm(a)
                     row[f"{WIN_NAME[w]}"] = (f"{cpm.alarm_events(a)} false alarms, first on day {(first - out.index[0]).days + 1} at {first:%H:%M}"
                                              if first is not None else "no alarms")
@@ -333,7 +332,7 @@ def part9_robustness(settings):
     return skew_summ, db_summ, fault
 
 
-# --- Run everything and write the summary ---
+# Run everything and write the summary
 
 if __name__ == "__main__":
     RESULTS.mkdir(exist_ok=True)
